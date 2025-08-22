@@ -1,182 +1,192 @@
-# import jwt
-# from typing import Optional
-# from fastapi import HTTPException, Request
-# from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-# from azure.identity import DefaultAzureCredential
-# from msal import ConfidentialClientApplication
-# import httpx
-# from decouple import config
-# import logging
+import jwt
+import httpx
+import logging
+from typing import Optional, Dict, Any
+from fastapi import HTTPException, Request
+from fastapi.security import HTTPBearer
+from decouple import config
+from datetime import datetime, timezone
+import asyncio
+from functools import lru_cache
 
-# logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-# # Azure AD Configuration
-# AZURE_CLIENT_ID = config('AZURE_CLIENT_ID')
-# AZURE_CLIENT_SECRET = config('AZURE_CLIENT_SECRET', default='')
-# AZURE_TENANT_ID = config('AZURE_TENANT_ID')
-# AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}"
-# AZURE_SCOPE = ["https://graph.microsoft.com/.default"]
+AZURE_CLIENT_ID = config('AZURE_CLIENT_ID')
+AZURE_TENANT_ID = config('AZURE_TENANT_ID')
+AZURE_AUDIENCE = config('AZURE_AUDIENCE')
+AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}"
+AZURE_JWKS_URL = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/discovery/v2.0/keys"
+JWT_ALGORITHM = "RS256"
 
-# # JWT Configuration
-# JWT_ALGORITHM = "RS256"
-# AZURE_JWKS_URL = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/discovery/v2.0/keys"
-
-# class AzureADAuth:
-#     def __init__(self):
-#         self.app = ConfidentialClientApplication(
-#             AZURE_CLIENT_ID,
-#             authority=AZURE_AUTHORITY,
-#             client_credential=AZURE_CLIENT_SECRET,
-#         )
-#         self.jwks_client = None
-#         self._jwks_cache = None
+class AzureADAuth:
+    def __init__(self):
+        self._jwks_cache = None
+        self._cache_expiry = None
+        self._cache_lock = asyncio.Lock()
     
-#     async def get_jwks(self):
-#         """Get JSON Web Key Set from Azure AD"""
-#         if self._jwks_cache is None:
-#             async with httpx.AsyncClient() as client:
-#                 response = await client.get(AZURE_JWKS_URL)
-#                 response.raise_for_status()
-#                 self._jwks_cache = response.json()
-#         return self._jwks_cache
-    
-#     async def get_signing_key(self, kid: str):
-#         """Get signing key for JWT verification"""
-#         jwks = await self.get_jwks()
-        
-#         for key in jwks["keys"]:
-#             if key["kid"] == kid:
-#                 return jwt.algorithms.RSAAlgorithm.from_jwk(key)
-        
-#         raise HTTPException(
-#             status_code=401,
-#             detail="Unable to find appropriate signing key"
-#         )
-    
-#     async def verify_token(self, token: str) -> dict:
-#         """Verify and decode JWT token from Azure AD"""
-#         try:
-#             # Decode header to get key ID
-#             unverified_header = jwt.get_unverified_header(token)
-#             kid = unverified_header["kid"]
+    async def get_jwks(self) -> Dict[str, Any]:
+        """Get JSON Web Key Set from Azure AD with caching"""
+        async with self._cache_lock:
+            now = datetime.now(timezone.utc)
             
-#             # Get signing key
-#             signing_key = await self.get_signing_key(kid)
+            # Check if cache is valid (refresh every hour)
+            if (self._jwks_cache is None or 
+                self._cache_expiry is None or 
+                now > self._cache_expiry):
+                
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(AZURE_JWKS_URL, timeout=10.0)
+                        response.raise_for_status()
+                        self._jwks_cache = response.json()
+                        # Cache for 1 hour
+                        from datetime import timedelta
+                        self._cache_expiry = now + timedelta(hours=1)
+                        logger.info("JWKS cache refreshed")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to fetch JWKS: {e}")
+                    if self._jwks_cache is None:
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Unable to fetch authentication keys"
+                        )
             
-#             # Verify and decode token
-#             payload = jwt.decode(
-#                 token,
-#                 signing_key,
-#                 algorithms=[JWT_ALGORITHM],
-#                 audience=AZURE_CLIENT_ID,
-#                 issuer=f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/v2.0"
-#             )
-            
-#             return payload
-            
-#         except jwt.ExpiredSignatureError:
-#             raise HTTPException(status_code=401, detail="Token expired")
-#         except jwt.InvalidTokenError as e:
-#             logger.error(f"Token validation error: {e}")
-#             raise HTTPException(status_code=401, detail="Invalid token")
+            return self._jwks_cache
     
-#     async def get_user_info(self, token: str) -> dict:
-#         """Get user information from Microsoft Graph API"""
-#         headers = {"Authorization": f"Bearer {token}"}
+    async def get_signing_key(self, kid: str):
+        """Get signing key for JWT verification"""
+        jwks = await self.get_jwks()
         
-#         async with httpx.AsyncClient() as client:
-#             response = await client.get(
-#                 "https://graph.microsoft.com/v1.0/me",
-#                 headers=headers
-#             )
+        for key in jwks.get("keys", []):
+            if key.get("kid") == kid:
+                return jwt.algorithms.RSAAlgorithm.from_jwk(key)
+        
+        raise HTTPException(
+            status_code=401,
+            detail="Unable to find appropriate signing key"
+        )
+    
+    async def verify_token(self, token: str) -> Dict[str, Any]:
+        """Verify and decode JWT token from Azure AD"""
+        try:
+            # Decode header to get key ID
+            unverified_header = jwt.get_unverified_header(token)
+            kid = unverified_header.get("kid")
             
-#             if response.status_code != 200:
-#                 raise HTTPException(
-#                     status_code=401,
-#                     detail="Failed to get user information"
-#                 )
+            logger.info(f"Token kid: {kid}")
             
-#             return response.json()
+            if not kid:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Token missing key ID"
+                )
+            
+            signing_key = await self.get_signing_key(kid)
+            logger.info(f"Signing key obtained successfully")
+            
+            # Accept both formats for audience
+            valid_audiences = [AZURE_AUDIENCE] if AZURE_AUDIENCE else [
+                AZURE_CLIENT_ID,
+                f"api://{AZURE_CLIENT_ID}"
+            ]
+            
+            logger.info(f"Valid audiences: {valid_audiences}")
+            
+            # Verify and decode token
+            payload = jwt.decode(
+                token,
+                signing_key,
+                algorithms=[JWT_ALGORITHM],
+                audience=valid_audiences,
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_aud": True,
+                    "verify_iss": True,
+                    "require": ["exp", "iat", "aud", "iss"]
+                }
+            )
+            
+            logger.info(f"Token decoded successfully")
+            return payload
+        
+        except jwt.ExpiredSignatureError as e:
+            logger.error(f"Token expired: {e}")
+            raise HTTPException(status_code=401, detail="Token has expired")
+        except jwt.InvalidAudienceError as e:
+            logger.error(f"Invalid audience: {e}")
+            raise HTTPException(status_code=401, detail="Invalid token audience")
+        except jwt.InvalidIssuerError as e:
+            logger.error(f"Invalid issuer: {e}")
+            raise HTTPException(status_code=401, detail="Invalid token issuer")
+        except jwt.InvalidTokenError as e:
+            logger.error(f"Token validation error: {e}")
+            raise HTTPException(status_code=401, detail="Invalid token")
+        except Exception as e:
+            logger.error(f"Unexpected authentication error: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=401, detail="Authentication failed")
 
-# # Global auth instance
-# azure_auth = AzureADAuth()
-# security = HTTPBearer()
+azure_auth = AzureADAuth()
+security = HTTPBearer()
 
-# async def get_current_user(request: Request) -> Optional[dict]:
-#     """Extract and validate user from JWT token"""
-#     try:
-#         # Get token from Authorization header
-#         authorization = request.headers.get("Authorization")
-#         if not authorization or not authorization.startswith("Bearer "):
-#             raise HTTPException(
-#                 status_code=401,
-#                 detail="Missing or invalid authorization header"
-#             )
+async def get_current_user(request: Request) -> Optional[Dict[str, Any]]:
+    """Extract and verify the current user from the request"""
+    try:
+        # Extract token from Authorization header
+        authorization = request.headers.get("Authorization")
+        if not authorization:
+            logger.warning("No Authorization header found")
+            raise HTTPException(
+                status_code=401,
+                detail="Authorization header missing"
+            )
         
-#         token = authorization.split(" ")[1]
+        if not authorization.startswith("Bearer "):
+            logger.warning("Invalid Authorization header format")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid authorization header format"
+            )
         
-#         # Verify token and get payload
-#         payload = await azure_auth.verify_token(token)
+        token = authorization.split(" ")[1]
         
-#         # Extract user information from token
-#         user_info = {
-#             "id": payload.get("oid"),  # Object ID
-#             "email": payload.get("preferred_username") or payload.get("email"),
-#             "full_name": payload.get("name", ""),
-#             "role": determine_user_role(payload),
-#             "is_active": True,
-#             "azure_payload": payload
-#         }
+        payload = await azure_auth.verify_token(token)
+        logger.info(f"Token verified successfully for app: {payload.get('appid')}")
         
-#         return user_info
+        user_info = {
+            "id": payload.get("oid") or payload.get("sub"),  
+            "email": payload.get("upn") or payload.get("unique_name") or f"app-{payload.get('appid')}@tenant",
+            "full_name": payload.get("name") or f"Application {payload.get('appid')}",
+            "tenant_id": payload.get("tid"),
+            "app_id": payload.get("appid"),
+            "is_active": True,
+            "roles": payload.get("roles", []),
+            "scopes": payload.get("scp", "").split(" ") if payload.get("scp") else [],
+            "token_type": "client_credentials" if payload.get("appidacr") == "1" else "user"
+        }
         
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Authentication error: {e}")
-#         raise HTTPException(status_code=401, detail="Authentication failed")
+        logger.info(f"User info extracted: {user_info}")
+        return user_info
+        
+    except HTTPException:
+        
+        raise
+    except Exception as e:
+        logger.error(f"Error extracting user from request: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication failed"
+        )
 
-# def determine_user_role(payload: dict) -> str:
-#     """Determine user role based on Azure AD groups or claims"""
-#     # Check for roles in the token
-#     roles = payload.get("roles", [])
-#     groups = payload.get("groups", [])
-    
-#     # Define your role mapping based on Azure AD groups/roles
-#     # This is just an example - adjust based on your Azure AD setup
-#     admin_groups = [config('AZURE_ADMIN_GROUP_ID', default='')]
-#     manager_groups = [config('AZURE_MANAGER_GROUP_ID', default='')]
-#     developer_groups = [config('AZURE_DEVELOPER_GROUP_ID', default='')]
-    
-#     if any(group in admin_groups for group in groups) or "Admin" in roles:
-#         return "admin"
-#     elif any(group in manager_groups for group in groups) or "Manager" in roles:
-#         return "manager"
-#     elif any(group in developer_groups for group in groups) or "Developer" in roles:
-#         return "developer"
-#     else:
-#         return "viewer"
-
-# # Alternative simple authentication for development/testing
-# async def get_current_user_simple(request: Request) -> Optional[dict]:
-#     """Simple authentication for development (not for production!)"""
-#     authorization = request.headers.get("Authorization")
-#     if not authorization or not authorization.startswith("Bearer "):
-#         raise HTTPException(
-#             status_code=401,
-#             detail="Missing authorization header"
-#         )
-    
-#     token = authorization.split(" ")[1]
-    
-#     # Simple token validation (for development only)
-#     if token == "dev-token":
-#         return {
-#             "id": "dev-user-1",
-#             "email": "developer@company.com",
-#             "full_name": "Development User",
-#             "role": "admin",
-#             "is_active": True
-#         }
-    
-#     raise HTTPException(status_code=401, detail="Invalid token")
+async def get_current_user_dependency(request: Request) -> Dict[str, Any]:
+    """FastAPI dependency for getting current user"""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="User not authenticated"
+        )
+    return user

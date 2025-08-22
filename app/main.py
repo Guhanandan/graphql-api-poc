@@ -9,7 +9,7 @@ from app.schema.queries import Query
 from app.schema.mutations import Mutation
 from app.database.connection import init_database
 from decouple import config
-
+from app.auth.azure_ad import get_current_user
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -28,8 +28,15 @@ async def lifespan(app: FastAPI):
     try:
         await init_database()
         logger.info("Database initialized successfully")
+        
+        # Log authentication mode
+        if config('DEBUG', default=False, cast=bool):
+            logger.warning("Running in DEBUG mode with development authentication")
+        else:
+            logger.info("Running with Azure AD authentication")
+            
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
+        logger.error(f"Failed to initialize: {e}")
         raise
     
     yield
@@ -48,9 +55,9 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config('ALLOWED_ORIGINS', default='http://localhost:3000').split(','),
+    allow_origins=config('ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:8080').split(','),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -78,6 +85,7 @@ async def root():
     return {
         "message": "Project Management GraphQL API",
         "status": "healthy",
+        "authentication": "Azure AD" if not config('DEBUG', default=False, cast=bool) else "Development",
         "graphql_endpoint": "/graphql",
         "graphiql_endpoint": "/graphql" if config('GRAPHIQL_ENABLED', default=True, cast=bool) else None
     }
@@ -86,17 +94,50 @@ async def root():
 async def health_check():
     """Detailed health check"""
     try:
-        # You could add database health check here
+        from datetime import datetime
         return {
             "status": "healthy",
             "database": "connected",
-            "timestamp": "2024-01-01T00:00:00Z"  # You'd use actual timestamp
+            "authentication": "Azure AD" if not config('DEBUG', default=False, cast=bool) else "Development",
+            "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=503, detail="Service unavailable")
 
+@app.post("/test-auth")
+async def test_auth(request: Request):
+    try:
+        user = await get_current_user(request)
+        return {"authenticated": True, "user": user}
+    except Exception as e:
+        # Add proper logging
+        logger.error(f"Authentication failed: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        return {"authenticated": False, "error": str(e)}
+
+@app.get("/auth/info")
+async def auth_info():
+    """Authentication configuration info (non-sensitive)"""
+    return {
+        "authentication_type": "Azure AD" if not config('DEBUG', default=False, cast=bool) else "Development",
+        "tenant_id": config('AZURE_TENANT_ID', default='not-configured'),
+        "client_id": config('AZURE_CLIENT_ID', default='not-configured'),
+        "debug_mode": config('DEBUG', default=False, cast=bool)
+    }
+
 # Error handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions"""
+    return {
+        "error": {
+            "message": exc.detail,
+            "status_code": exc.status_code
+        }
+    }
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
@@ -110,7 +151,7 @@ if __name__ == "__main__":
     import uvicorn
     
     uvicorn.run(
-        "app.main:app",
+        "main:app",
         host="0.0.0.0",
         port=8000,
         reload=config('DEBUG', default=False, cast=bool),
