@@ -17,6 +17,7 @@ class ProjectPriority(str, Enum):
 
 # Pydantic models for data validation
 class ProjectBase(BaseModel):
+    project_id: Optional[str] = Field(None, min_length=1, max_length=100)
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = Field(None, max_length=1000)
     status: ProjectStatus = ProjectStatus.ACTIVE
@@ -26,7 +27,7 @@ class ProjectBase(BaseModel):
     budget: Optional[float] = Field(None, ge=0)
 
 class ProjectCreate(ProjectBase):
-    pass
+    project_id: str = Field(..., min_length=1, max_length=100)
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)

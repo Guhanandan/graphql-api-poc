@@ -37,6 +37,7 @@ class User:
 @strawberry.type
 class Project:
     id: str
+    project_id: str
     name: str
     description: Optional[str]
     status: ProjectStatus
@@ -62,13 +63,14 @@ class ProjectFilter:
     search: Optional[str] = None  # Search in name and description
 
 @strawberry.input
-class ProjectInput:
-    name: str
+class CreateProjectInput:
+    project_id: str = strawberry.field(description="Unique project identifier")
+    name: str = strawberry.field(description="Project name")
     description: Optional[str] = None
     status: ProjectStatus = ProjectStatus.ACTIVE
     priority: ProjectPriority = ProjectPriority.MEDIUM
-    tags: Optional[List[str]] = None
-    owner_id: str
+    tags: Optional[List[str]] = strawberry.field(default_factory=list)
+    owner_id: str = strawberry.field(description="Project owner ID")
     budget: Optional[float] = None
 
 @strawberry.input

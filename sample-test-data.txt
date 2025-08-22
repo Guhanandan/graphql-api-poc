@@ -1,0 +1,318 @@
+# Sample GraphQL Queries and Mutations for Testing
+
+# 1. Seed test data (run this first)
+mutation SeedTestData {
+  seedTestData
+}
+
+# 2. Get all projects with pagination
+query GetProjects {
+  projects(first: 10) {
+    edges {
+      node {
+        id
+        projectId
+        name
+        description
+        status
+        priority
+        tags
+        budget
+        ownerId
+        createdAt
+        updatedAt
+      }
+      cursor
+    }
+    pageInfo {
+      hasNextPage
+      hasPreviousPage
+      startCursor
+      endCursor
+      totalCount
+    }
+  }
+}
+
+# 3. Get projects with filtering
+query GetFilteredProjects {
+  projects(
+    first: 5,
+    filter: {
+      status: ACTIVE,
+      priority: HIGH
+    }
+  ) {
+    edges {
+      node {
+        id
+        projectId
+        name
+        status
+        priority
+        budget
+      }
+    }
+    pageInfo {
+      totalCount
+    }
+  }
+}
+
+# 4. Get a specific project by ID
+query GetProject {
+  project(id: "ECOM-2024-001") {
+    id
+    projectId
+    name
+    description
+    status
+    priority
+    tags
+    budget
+    ownerId
+    createdAt
+    updatedAt
+    owner {
+      id
+      email
+      fullName
+      role
+    }
+  }
+}
+
+# 5. Create a new project
+mutation CreateProject {
+  createProject(input: {
+    projectId: "API-2024-001"
+    name: "GraphQL API Development"
+    description: "Building a robust GraphQL API with FastAPI and Strawberry"
+    status: ACTIVE
+    priority: HIGH
+    tags: ["api", "graphql", "fastapi"]
+    ownerId: "test-user-123"
+    budget: 30000.0
+  }) {
+    id
+    projectId
+    name
+    description
+    status
+    priority
+    tags
+    budget
+    createdAt
+  }
+}
+
+# 6. Update an existing project
+mutation UpdateProject {
+  updateProject(
+    id: "API-2024-001",
+    input: {
+      name: "Advanced GraphQL API Development"
+      description: "Building a robust GraphQL API with advanced features"
+      priority: "CRITICAL"
+      budget: 45000.0
+    }
+  ) {
+    id
+    projectId
+    name
+    description
+    priority
+    budget
+    updatedAt
+  }
+}
+
+# 7. Delete a project
+mutation DeleteProject {
+  deleteProject(id: "API-2024-001")
+}
+
+# 8. Get all users
+query GetUsers {
+  users {
+    id
+    email
+    fullName
+    role
+    isActive
+    createdAt
+  }
+}
+
+# 9. Get a specific user
+query GetUser {
+  user(id: "test-user-123") {
+    id
+    email
+    fullName
+    role
+    isActive
+  }
+}
+
+# 10. Complex query with multiple operations
+query ComplexQuery {
+  # Get active projects
+  activeProjects: projects(
+    first: 5,
+    filter: { status: ACTIVE }
+  ) {
+    edges {
+      node {
+        projectId
+        name
+        priority
+        budget
+      }
+    }
+    pageInfo {
+      totalCount
+    }
+  }
+  
+  # Get all users
+  users {
+    id
+    email
+    fullName
+    role
+  }
+  
+  # Get a specific project
+  specificProject: project(id: "ECOM-2024-001") {
+    name
+    status
+    owner {
+      fullName
+      email
+    }
+  }
+}
+
+# 11. Search projects by name/description
+query SearchProjects {
+  projects(
+    first: 10,
+    filter: {
+      search: "mobile"
+    }
+  ) {
+    edges {
+      node {
+        projectId
+        name
+        description
+        tags
+      }
+    }
+    pageInfo {
+      totalCount
+    }
+  }
+}
+
+# 12. Filter by tags
+query ProjectsByTags {
+  projects(
+    first: 10,
+    filter: {
+      tags: ["web", "api"]
+    }
+  ) {
+    edges {
+      node {
+        projectId
+        name
+        tags
+        status
+      }
+    }
+    pageInfo {
+      totalCount
+    }
+  }
+}
+
+# 13. Get projects by owner
+query ProjectsByOwner {
+  projects(
+    first: 10,
+    filter: {
+      ownerId: "test-user-123"
+    }
+  ) {
+    edges {
+      node {
+        projectId
+        name
+        ownerId
+        owner {
+          fullName
+          email
+        }
+      }
+    }
+    pageInfo {
+      totalCount
+    }
+  }
+}
+
+# 14. Pagination example (get next page)
+query GetNextPage {
+  projects(
+    first: 3,
+    after: "eyJvZmZzZXQiOiAzfQ=="  # This would be the endCursor from previous query
+  ) {
+    edges {
+      node {
+        projectId
+        name
+      }
+      cursor
+    }
+    pageInfo {
+      hasNextPage
+      hasPreviousPage
+      startCursor
+      endCursor
+      totalCount
+    }
+  }
+}
+
+# 15. Create multiple projects in sequence
+mutation CreateMultipleProjects {
+  project1: createProject(input: {
+    projectId: "WEB-2024-001"
+    name: "Website Redesign"
+    description: "Complete website overhaul"
+    status: "ACTIVE"
+    priority: "MEDIUM"
+    tags: ["web", "design", "ui"]
+    ownerId: "test-user-123"
+    budget: 20000.0
+  }) {
+    projectId
+    name
+  }
+  
+  project2: createProject(input: {
+    projectId: "SECURITY-2024-001"
+    name: "Security Audit"
+    description: "Comprehensive security review"
+    status: "ACTIVE"
+    priority: "CRITICAL"
+    tags: ["security", "audit"]
+    ownerId: "test-user-123"
+    budget: 15000.0
+  }) {
+    projectId
+    name
+  }
+}

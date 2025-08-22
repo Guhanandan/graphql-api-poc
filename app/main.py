@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import strawberry
